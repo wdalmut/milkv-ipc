@@ -68,12 +68,20 @@ int main(int argc, char **argv)
            SHM_PHYS_ADDR, SHM_SIZE, sizeof(sensor_msg_t));
 
     if (one_shot) {
+        /*
+         * Lo snapshot va preso PRIMA di munmap(): dopo, quell'indirizzo non e'
+         * piu' mappato e dereferenziarlo e' un SIGSEGV. Serve comunque anche
+         * per non leggere due volte una finestra che il producer sta scrivendo.
+         */
+        sensor_msg_t snap;
+        memcpy(&snap, (const void *)m, sizeof(snap));
+
         printf("magic=0x%08x seq=%u temp=%d mC vib=%u ts=%llu drops=%u\n",
-               m->magic, m->seq, m->temp_mC, m->vib_rms,
-               (unsigned long long)m->ts_us, m->drops);
+               snap.magic, snap.seq, snap.temp_mC, snap.vib_rms,
+               (unsigned long long)snap.ts_us, snap.drops);
         munmap(p, SHM_SIZE);
         close(fd);
-        return (m->magic == MSG_MAGIC) ? 0 : 1;
+        return (snap.magic == MSG_MAGIC) ? 0 : 1;
     }
 
     uint32_t last = 0;

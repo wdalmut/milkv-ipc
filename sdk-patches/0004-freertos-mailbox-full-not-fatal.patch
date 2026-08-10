@@ -1,0 +1,42 @@
+From: duos-ipc <noreply@corley.it>
+Subject: [PATCH 4/4] freertos: un mailbox pieno non deve uccidere l'RTOS
+
+prvCmdQuRunTask() faceva "return -1" quando tutti gli 8 slot del mailbox
+(MAILBOX_MAX_NUM) risultavano occupati. Ma e' una funzione task void: il port
+RISC-V mette x0 come indirizzo di ritorno del task (Source/portable/GCC/RISC-V/
+portASM.S), quindi il ritorno salta all'indirizzo 0 e porta giu' tutto l'RTOS -
+sensor task compreso.
+
+Come ci si arriva: l'RTOS parte secondi prima di Linux. Qualunque task che
+mandi messaggi verso Linux a ritmo sostenuto riempie gli 8 slot prima che
+esista qualcuno che li drena. A 10 Hz ci vogliono 800 ms.
+
+Sintomo osservato: la finestra condivisa si congela a seq=9 / ts=800000, con
+magic e payload perfettamente validi. Un reader one-shot legge un cadavere e
+sembra tutto a posto; solo il polling rivela che seq non avanza piu'.
+
+Un mailbox pieno e' una condizione recuperabile: si scarta la notifica e si
+continua a servire la coda.
+
+Generata contro v2.0.1.
+
+diff --git a/freertos/cvitek/task/comm/src/riscv64/comm_main.c b/freertos/cvitek/task/comm/src/riscv64/comm_main.c
+index 2ebf220b3..ed1a419ce 100644
+--- a/freertos/cvitek/task/comm/src/riscv64/comm_main.c
++++ b/freertos/cvitek/task/comm/src/riscv64/comm_main.c
+@@ -325,8 +325,14 @@ send_label:
+ 				}
+ 				drv_spin_unlock_irqrestore(&mailbox_lock, flags);
+ 				if (valid >= MAILBOX_MAX_NUM) {
++				    /* duos-ipc: era "return -1" da una funzione task void.
++				     * Il port RISC-V mette x0 come indirizzo di ritorno del
++				     * task (portASM.S), quindi il ritorno salta a 0 e porta
++				     * giu' tutto l'RTOS. Un mailbox pieno e' una condizione
++				     * recuperabile - tipicamente Linux non e' ancora su a
++				     * drenarlo - e va gestita scartando la notifica. */
+ 				    printf("No valid mailbox is available\n");
+-				    return -1;
++				    break;
+ 				}
+ 				break;
+ 		}

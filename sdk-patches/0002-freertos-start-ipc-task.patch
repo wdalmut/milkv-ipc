@@ -1,5 +1,5 @@
 From: duos-ipc <noreply@corley.it>
-Subject: [PATCH 2/3] freertos: avvia il task IPC prima dello scheduler
+Subject: [PATCH 2/4] freertos: avvia il task IPC prima dello scheduler
 
 Il task producer va creato prima di vTaskStartScheduler(), altrimenti non
 parte mai.

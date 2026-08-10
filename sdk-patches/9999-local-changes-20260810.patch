@@ -62,7 +62,7 @@ index 8890ed220..f473e0ec6 100644
  include_directories(${CMAKE_INSTALL_INC_PREFIX}/common)
  include_directories(${CMAKE_INSTALL_INC_PREFIX}/kernel)
 diff --git a/freertos/cvitek/task/comm/src/riscv64/comm_main.c b/freertos/cvitek/task/comm/src/riscv64/comm_main.c
-index 454581662..2ebf220b3 100644
+index 454581662..ed1a419ce 100644
 --- a/freertos/cvitek/task/comm/src/riscv64/comm_main.c
 +++ b/freertos/cvitek/task/comm/src/riscv64/comm_main.c
 @@ -46,6 +46,11 @@ typedef struct _TASK_CTX_S {
@@ -88,3 +88,19 @@ index 454581662..2ebf220b3 100644
  	/* Start the tasks and timer running. */
  	vTaskStartScheduler();
  
+@@ -316,8 +325,14 @@ send_label:
+ 				}
+ 				drv_spin_unlock_irqrestore(&mailbox_lock, flags);
+ 				if (valid >= MAILBOX_MAX_NUM) {
++				    /* duos-ipc: era "return -1" da una funzione task void.
++				     * Il port RISC-V mette x0 come indirizzo di ritorno del
++				     * task (portASM.S), quindi il ritorno salta a 0 e porta
++				     * giu' tutto l'RTOS. Un mailbox pieno e' una condizione
++				     * recuperabile - tipicamente Linux non e' ancora su a
++				     * drenarlo - e va gestita scartando la notifica. */
+ 				    printf("No valid mailbox is available\n");
+-				    return -1;
++				    break;
+ 				}
+ 				break;
+ 		}
