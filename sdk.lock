@@ -1,0 +1,5 @@
+# Revisione dell'SDK con cui questo repo e' verificato.
+# L'SDK NON e' un submodule: e' un ambiente di build, lo si clona a parte.
+SDK_URL=https://github.com/milkv-duo/duo-buildroot-sdk-v2.git
+SDK_REF=v2.0.1
+SDK_TARGET=milkv-duos-musl-riscv64-sd

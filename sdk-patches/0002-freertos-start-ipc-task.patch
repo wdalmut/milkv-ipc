@@ -1,0 +1,42 @@
+From: duos-ipc <noreply@corley.it>
+Subject: [PATCH 2/3] freertos: avvia il task IPC prima dello scheduler
+
+Il task producer va creato prima di vTaskStartScheduler(), altrimenti non
+parte mai.
+
+Nota sul path: nell'SDK v2 il punto di innesto NON e' task/main/src/main.c
+(che si limita a chiamare main_cvirtos()) ma comm/src/riscv64/comm_main.c,
+dove vengono create le code e i task e da dove parte lo scheduler.
+
+La chiamata sta dopo main_create_tasks() perche' il doorbell del task accoda
+su E_QUEUE_CMDQU, che deve gia' esistere.
+
+Generata contro v2.0.1.
+
+diff --git a/freertos/cvitek/task/comm/src/riscv64/comm_main.c b/freertos/cvitek/task/comm/src/riscv64/comm_main.c
+index 454581662..2ebf220b3 100644
+--- a/freertos/cvitek/task/comm/src/riscv64/comm_main.c
++++ b/freertos/cvitek/task/comm/src/riscv64/comm_main.c
+@@ -46,6 +46,11 @@ typedef struct _TASK_CTX_S {
+ void prvQueueISR(void);
+ void prvCmdQuRunTask(void *pvParameters);
+ 
++/* duos-ipc: producer verso Linux (payload in shared memory, doorbell sul
++ * mailbox). Definito in task/ipc/sensor_task.c, symlinkato dal repo duos-ipc
++ * da scripts/install-rtos.sh. */
++extern void ipc_sensor_task_create(void);
++
+ /****************************************************************************
+  * Global parameters
+  ****************************************************************************/
+@@ -155,6 +160,10 @@ void main_cvirtos(void)
+ 
+ 	main_create_tasks();
+ 
++	/* duos-ipc: dopo main_create_tasks() perche' il doorbell accoda su
++	 * E_QUEUE_CMDQU, ma prima dello scheduler o il task non parte mai. */
++	ipc_sensor_task_create();
++
+ 	/* Start the tasks and timer running. */
+ 	vTaskStartScheduler();
+ 

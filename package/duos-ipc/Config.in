@@ -1,0 +1,7 @@
+config BR2_PACKAGE_DUOS_IPC
+	bool "duos-ipc"
+	help
+	  Reader userspace per la memoria condivisa fra il core FreeRTOS
+	  e Linux sul Milk-V Duo S (SG2000).
+
+	  Installa /usr/bin/ipc-reader.

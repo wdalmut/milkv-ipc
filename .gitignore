@@ -1,0 +1,6 @@
+*.o
+*.elf
+build/
+output/
+src/reader
+.sdk-path
