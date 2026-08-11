@@ -1,0 +1,65 @@
+#!/bin/sh
+# S99zduos-ipc - carica il modulo doorbell del canale IPC.
+#
+# Deve girare DOPO che sono stati caricati i moduli cvitek, perche' duos_ipc_irq
+# usa request_rtos_irq()/free_rtos_irq(), esportate da cv181x_rtos_cmdqu.
+#
+# Quel caricamento lo fa S99user, lo script dell'SDK che stampa "init mpp
+# system". Da qui la 'z' nel nome: rcS esegue /etc/init.d/S??* in ordine
+# alfabetico, e "S99zduos-ipc" viene dopo "S99user" mentre "S99duos-ipc" veniva
+# prima. Con il nome sbagliato lo script girava, trovava la dipendenza assente e
+# si fermava - silenziosamente corretto e completamente inutile.
+#
+# Non si tocca S99user: e' dell'SDK e riguarda i moduli Sophgo.
+
+KO=/usr/lib/duos-ipc/duos_ipc_irq.ko
+MOD=duos_ipc_irq
+DEP=cv181x_rtos_cmdqu
+
+loaded() {
+	grep -q "^$1 " /proc/modules
+}
+
+case "$1" in
+start)
+	# Assente = immagine costruita senza BR2_PACKAGE_DUOS_IPC_KMOD. Non e' un
+	# errore: il reader ripiega sul polling.
+	[ -f "$KO" ] || exit 0
+
+	loaded "$MOD" && exit 0
+
+	# Rete di sicurezza: se S99user carica i moduli in background, o se un
+	# giorno cambia nome e torniamo a girare troppo presto, si attende la
+	# dipendenza invece di arrendersi subito. Con l'ordine giusto il ciclo non
+	# fa nemmeno un giro.
+	i=0
+	while ! loaded "$DEP"; do
+		i=$((i + 1))
+		if [ "$i" -gt 5 ]; then
+			echo "duos-ipc: $DEP assente dopo ${i}s, salto $MOD" >&2
+			exit 0
+		fi
+		sleep 1
+	done
+
+	if ! insmod "$KO"; then
+		echo "duos-ipc: insmod $KO fallito" >&2
+		exit 1
+	fi
+	;;
+stop)
+	# Un fd aperto su /dev/duos-ipc tiene un riferimento al modulo: se un
+	# reader e' in attesa, rmmod fallisce con EBUSY. Voluto.
+	loaded "$MOD" && rmmod "$MOD"
+	;;
+restart|reload)
+	"$0" stop
+	"$0" start
+	;;
+*)
+	echo "uso: $0 {start|stop|restart}" >&2
+	exit 1
+	;;
+esac
+
+exit 0

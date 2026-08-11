@@ -5,4 +5,7 @@ set -e
 TARGET_DIR=$1
 chmod 0755 "$TARGET_DIR/root/selftest.sh" 2>/dev/null || true
 # L'init script deve essere eseguibile o busybox init lo ignora in silenzio.
-chmod 0755 "$TARGET_DIR/etc/init.d/S99duos-ipc" 2>/dev/null || true
+chmod 0755 "$TARGET_DIR/etc/init.d/S99zduos-ipc" 2>/dev/null || true
+# Se resta il nome vecchio da un'immagine precedente, girerebbe prima di S99user
+# e si fermerebbe per dipendenza assente. Meglio togliergli l'eseguibilita'.
+rm -f "$TARGET_DIR/etc/init.d/S99duos-ipc" 2>/dev/null || true
