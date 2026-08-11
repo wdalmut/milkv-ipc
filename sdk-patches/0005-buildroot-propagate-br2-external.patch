@@ -1,0 +1,58 @@
+From: duos-ipc <noreply@corley.it>
+Subject: [PATCH 5/5] buildroot: propaga BR2_EXTERNAL
+
+Buildroot veniva invocato senza BR2_EXTERNAL, quindi nessun albero esterno
+poteva contribuire package all'immagine: il pacchetto duos-ipc non ci entrava
+mai e ipc-reader finiva sulla board a mano via scp.
+
+BR2_EXTERNAL va passato al momento del defconfig, perche' Buildroot lo memorizza
+in output/.br2-external.mk. Ripassarlo identico alle invocazioni successive e'
+innocuo; passarne uno diverso sarebbe un errore, ed e' giusto che lo sia.
+
+L'argomento e' costruito con $(if ...): se BR2_EXTERNAL non e' nell'ambiente
+resta vuoto e il comportamento e' identico a prima. La patch e' inerte per chi
+non la usa.
+
+Tolto anche uno spazio in coda a "br-rootfs-pack: " che finiva nel diff.
+
+Generata contro v2.0.1.
+
+diff --git a/build/Makefile b/build/Makefile
+index a5f8059de..fcb54c1ab 100644
+--- a/build/Makefile
++++ b/build/Makefile
+@@ -605,19 +605,29 @@ endif
+ 
+ BR_TARGET_OUTPUT_DIR=$(BR_DIR)/output/$(BR_BOARD)
+ 
++# duos-ipc: BR2_EXTERNAL non veniva mai propagato a Buildroot, quindi nessun
++# albero BR2_EXTERNAL poteva contribuire package all'immagine. Va passato al
++# momento del defconfig, perche' Buildroot lo memorizza in
++# output/.br2-external.mk; ripassarlo identico dopo e' innocuo.
++#
++# Se BR2_EXTERNAL non e' nell'ambiente l'argomento resta vuoto e il
++# comportamento e' quello di prima: la patch e' inerte per chi non la usa.
++BR2_EXTERNAL ?=
++BR_EXTERNAL_ARG = $(if $(BR2_EXTERNAL),BR2_EXTERNAL=$(BR2_EXTERNAL),)
++
+ $(BR_DIR)/output/$(BR_BOARD)/.config:
+ 	$(call print_target)
+-	${Q}$(MAKE) -C $(BR_DIR) $(BR_DEFCONFIG) BR2_TOOLCHAIN_EXTERNAL_PATH=$(CROSS_COMPILE_PATH) TARGET_OUTPUT_DIR=$(BR_TARGET_OUTPUT_DIR)
++	${Q}$(MAKE) -C $(BR_DIR) $(BR_DEFCONFIG) BR2_TOOLCHAIN_EXTERNAL_PATH=$(CROSS_COMPILE_PATH) TARGET_OUTPUT_DIR=$(BR_TARGET_OUTPUT_DIR) $(BR_EXTERNAL_ARG)
+ 
+ br-menuconfig: $(BR_DIR)/output/$(BR_BOARD)/.config
+-	${Q}$(MAKE) -C $(BR_DIR) menuconfig BR2_TOOLCHAIN_EXTERNAL_PATH=$(CROSS_COMPILE_PATH) TARGET_OUTPUT_DIR=$(BR_TARGET_OUTPUT_DIR)
+-	${Q}$(MAKE) -C $(BR_DIR) savedefconfig BR2_TOOLCHAIN_EXTERNAL_PATH=$(CROSS_COMPILE_PATH) TARGET_OUTPUT_DIR=$(BR_TARGET_OUTPUT_DIR)
++	${Q}$(MAKE) -C $(BR_DIR) menuconfig BR2_TOOLCHAIN_EXTERNAL_PATH=$(CROSS_COMPILE_PATH) TARGET_OUTPUT_DIR=$(BR_TARGET_OUTPUT_DIR) $(BR_EXTERNAL_ARG)
++	${Q}$(MAKE) -C $(BR_DIR) savedefconfig BR2_TOOLCHAIN_EXTERNAL_PATH=$(CROSS_COMPILE_PATH) TARGET_OUTPUT_DIR=$(BR_TARGET_OUTPUT_DIR) $(BR_EXTERNAL_ARG)
+ 
+ 
+ br-rootfs-pack:export TARGET_OUTPUT_DIR=$(BR_TARGET_OUTPUT_DIR)
+-br-rootfs-pack: 
++br-rootfs-pack:
+ 	$(call print_target)
+-	${Q}$(MAKE) -C $(BR_DIR) $(BR_DEFCONFIG) BR2_TOOLCHAIN_EXTERNAL_PATH=$(CROSS_COMPILE_PATH)
++	${Q}$(MAKE) -C $(BR_DIR) $(BR_DEFCONFIG) BR2_TOOLCHAIN_EXTERNAL_PATH=$(CROSS_COMPILE_PATH) $(BR_EXTERNAL_ARG)
+ 	${Q}$(BR_DIR)/utils/brmake -j${NPROC} -C $(BR_DIR)
+ 	# ${Q}rm -rf $(BR_ROOTFS_DIR)/*
+ 	${Q}rm -rf $(BR_MV_VENDOR_DIR)

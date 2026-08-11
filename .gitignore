@@ -4,3 +4,13 @@ build/
 output/
 src/reader
 .sdk-path
+docs/superpowers
+
+# artefatti della build del modulo kernel (kbuild sporca la source dir)
+*.ko
+*.mod
+*.mod.c
+.*.cmd
+Module.symvers
+modules.order
+.tmp_versions/

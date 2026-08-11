@@ -9,7 +9,17 @@
 #ifndef SHARED_MSG_H
 #define SHARED_MSG_H
 
+/*
+ * Incluso da tre lati: task FreeRTOS, reader userspace e modulo kernel.
+ * In kernel space <stdint.h> non esiste, ma linux/types.h definisce gli stessi
+ * tipi a larghezza fissa (uint32_t e uint64_t), quindi la struct e le macro qui
+ * sotto restano identiche in tutti e tre i mondi.
+ */
+#ifdef __KERNEL__
+#include <linux/types.h>
+#else
 #include <stdint.h>
+#endif
 
 /*
  * Indirizzo fisico della finestra condivisa.

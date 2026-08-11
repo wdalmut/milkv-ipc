@@ -5,3 +5,22 @@ config BR2_PACKAGE_DUOS_IPC
 	  e Linux sul Milk-V Duo S (SG2000).
 
 	  Installa /usr/bin/ipc-reader.
+
+if BR2_PACKAGE_DUOS_IPC
+
+config BR2_PACKAGE_DUOS_IPC_KMOD
+	bool "modulo doorbell (duos_ipc_irq)"
+	help
+	  Modulo kernel che porta il doorbell del core FreeRTOS fino a
+	  userspace: registra l'handler IP_SYSTEM di cvi_rtos_cmdqu ed
+	  espone /dev/duos-ipc con poll()/read() su un contatore di
+	  doorbell.
+
+	  Senza questo il reader funziona comunque, ripiegando sul polling
+	  di seq.
+
+	  Va compilato contro il kernel dell'SDK, quindi la build richiede
+	  TOP_DIR, KERNEL_PATH e KERNEL_OUTPUT_FOLDER nell'ambiente:
+	  l'SDK le esporta gia'.
+
+endif

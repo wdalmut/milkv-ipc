@@ -87,20 +87,21 @@ static void publish(int32_t temp_mC, uint32_t vib_rms, uint32_t drops)
 }
 
 /*
- * Doorbell verso Linux: OFF di default.
+ * Doorbell verso Linux: ON da v1-irq.
  *
- * In v0-polling il reader fa polling su `seq` e la doorbell e' ignorata, quindi
- * accenderla non porta nulla e costa caro. L'RTOS parte secondi prima di Linux:
- * a 10 Hz i 8 slot del mailbox (MAILBOX_MAX_NUM) si riempiono in 800 ms mentre
- * nessuno li drena, e da quel momento ogni doorbell fallisce. Con un mailbox
- * pieno l'unica cosa che si ottiene e' un "No valid mailbox is available" sulla
- * console RTOS a 10 Hz.
+ * Due precondizioni, entrambe soddisfatte da qui in poi:
  *
- * Mettila a 1 quando arrivi a v1-irq, cioe' quando esiste un consumer lato
- * Linux. Serve anche la patch 0004 sull'SDK, che rende non fatale il mailbox
- * pieno: senza, l'esaurimento degli slot porta giu' tutto l'RTOS.
+ *  - la patch 0004 sull'SDK, che rende non fatale un mailbox pieno. L'RTOS parte
+ *    secondi prima di Linux e a 10 Hz gli 8 slot (MAILBOX_MAX_NUM) si riempiono
+ *    in 800 ms mentre nessuno li drena. Senza quella patch l'esaurimento degli
+ *    slot fa uscire prvCmdQuRunTask da una funzione task void, e il port RISC-V
+ *    salta a 0: RTOS giu', canale congelato;
+ *  - il modulo duos_ipc_irq lato Linux, che occupa lo slot handler di IP_SYSTEM
+ *    e sveglia il reader. Senza, ogni doorbell finisce in un pr_err dell'ISR.
+ *
+ * Rimettila a 0 per tornare al comportamento di v0-polling.
  */
-#define IPC_DOORBELL 0
+#define IPC_DOORBELL 1
 
 #if IPC_DOORBELL
 /*

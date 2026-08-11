@@ -1,9 +1,16 @@
-# Frammento da mergiare nel defconfig della board, non un defconfig completo:
+# Frammento da mergiare nel defconfig Buildroot della board.
 #
-#   cat configs/duos_ipc_defconfig >> <sdk>/buildroot/configs/<board>_defconfig
+# NON usare `cat >>`: BR2_ROOTFS_OVERLAY e' gia' impostata nel defconfig della
+# board e punta all'overlay Milk-V, dentro cui l'SDK riversa tutto il rootfs
+# cvitek. Una seconda assegnazione la sostituirebbe, svuotando il rootfs. E' una
+# lista separata da spazi e va APPESA.
 #
-# oppure, piu' pulito, selezionalo da menuconfig sotto
-#   External options -> duos-ipc
+# Ci pensa scripts/enable-package.sh, che e' idempotente:
+#
+#   ./scripts/enable-package.sh [percorso-sdk]
+#
+# In alternativa, da menuconfig: External options -> duos-ipc.
 BR2_PACKAGE_DUOS_IPC=y
-BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_DUOS_IPC_PATH)/board/duos/rootfs-overlay"
+BR2_PACKAGE_DUOS_IPC_KMOD=y
+BR2_ROOTFS_OVERLAY_APPEND="$(BR2_EXTERNAL_DUOS_IPC_PATH)/board/duos/rootfs-overlay"
 BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_DUOS_IPC_PATH)/board/duos/post-build.sh"

@@ -81,6 +81,11 @@ fi
 
 echo "$SDK_DIR" > "$HERE/.sdk-path"
 
+# ------------------------------------------------------- package in menuconfig
+# Attiva il pacchetto nel defconfig Buildroot della board. Non e' un `cat >>`:
+# BR2_ROOTFS_OVERLAY e' gia' impostata e va appesa, non sostituita.
+"$HERE/scripts/enable-package.sh" "$SDK_DIR"
+
 cat <<EOF
 
 >> SDK pronto e deterministico. Per compilare:
