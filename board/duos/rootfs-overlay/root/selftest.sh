@@ -96,8 +96,12 @@ echo "== 9. dmesg: nessun doorbell orfano DOPO il caricamento"
 # modulo non e' ancora caricato. Quelle sono attese. Quelle che contano sono le
 # righe DOPO il messaggio del modulo: li' vorrebbe dire che l'handler e' stato
 # scalzato, o che il modulo e' stato scaricato.
+# Attenzione: grep -n da' il NUMERO DI RIGA in dmesg, che serve a ordinare gli
+# eventi ma non e' un conteggio. Il conteggio va chiesto a parte, o si finisce a
+# leggere "318" come se fossero 318 doorbell perse.
 LAST_ERR=$(dmesg | grep -n 'error ip=6' | tail -1 | cut -d: -f1)
 LAST_MOD=$(dmesg | grep -n 'duos-ipc.*pronto' | tail -1 | cut -d: -f1)
+N_ERR=$(dmesg | grep -c 'error ip=6' || true)
 
 if [ -z "$LAST_MOD" ]; then
 	echo "   WARN: nessun messaggio di caricamento del modulo in dmesg"
@@ -107,7 +111,7 @@ elif [ -n "$LAST_ERR" ] && [ "$LAST_ERR" -gt "$LAST_MOD" ]; then
 	dmesg | tail -5
 	exit 1
 else
-	echo "   ok (${LAST_ERR:-0} righe, tutte precedenti al caricamento)"
+	echo "   ok ($N_ERR doorbell orfane, tutte precedenti al caricamento)"
 fi
 
 echo

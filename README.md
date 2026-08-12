@@ -7,8 +7,9 @@ mailbox.
 Il mailbox del SG2000 trasporta solo 8 byte (`cmdqu_t`): non ci passi una
 struct. Il pattern e' **payload in memoria condivisa, notifica sul mailbox**.
 
-Stato: `v1-irq`. Il reader dorme in `poll()` e si sveglia sull'interrupt del
-mailbox — 20 campioni a 10 Hz in 1.95 s reali con `sys 0.00s`. Verificato su
+Il reader fa `read()` su `/dev/duos-ipc`: dorme fino al campione successivo e
+riceve la struct gia' verificata. Non serve root, e il costo dell'attesa e' zero
+— 20 campioni a 10 Hz in 1.95 s reali con `sys 0.00s`. Verificato su
 `duo-buildroot-sdk-v2` a `v2.0.1`.
 
 ## Creazione del container di lavoro
@@ -104,18 +105,23 @@ Tre dettagli che spiegano il resto:
 
 ## Come funziona il canale
 
-Due percorsi distinti, ed e' voluto: il mailbox trasporta 8 byte, quindi porta
-solo il campanello.
+Fra i due core i percorsi sono due, ed e' voluto: il mailbox trasporta 8 byte,
+quindi porta solo il campanello. Ma userspace ne vede **uno**: il modulo li
+ricongiunge e il reader fa una `read()` sola.
 
+```text
+sensor_task (C906)                     duos_ipc_irq.ko            userspace
+  publish() ──► shared memory ────────► ioremap + seqlock ──┐
+  doorbell()      0x8FE00000                                ├─► read() = 32 B
+    │ cmdqu block=0                                         │   su /dev/duos-ipc
+    │ ip_id=IP_SYSTEM, cmd_id=0x40                          │
+    ▼                                                       │
+  E_QUEUE_CMDQU ──► mailbox ──► rtos_irq_handler ──► bell++ ┘
+                                  (ramo handler)   wake_up
 ```
-sensor_task (C906)                     linux
-  publish() ─────► shared memory 0x8FE00000 ─────► reader: snapshot + mmap
-  doorbell()                                              ▲
-    │ cmdqu block=0, ip_id=IP_SYSTEM, cmd_id=0x40         │ poll() + read()
-    ▼                                                     │
-  E_QUEUE_CMDQU ──► mailbox ──► rtos_irq_handler ──► duos_ipc_irq.ko
-                                  (ramo handler)     bell++ ; wake_up
-```
+
+Il payload **non** passa dal mailbox e **non** passa da `/dev/mem`: il driver
+mappa la finestra e la legge lui.
 
 **Perche' serve un modulo kernel.** Userspace non ha modo di bloccarsi su un
 messaggio non sollecitato: `RTOS_CMDQU_SEND_WAIT` e' manda-e-attendi-risposta,
@@ -129,11 +135,26 @@ registrato per quell'`ip_id`; altrimenti stampa `error ip=.. cmd=..`. Con
 l'osservabile che dice che la doorbell suona ma nessuno l'ha agganciata: se
 compare, il modulo non e' caricato.
 
-`/dev/duos-ipc` espone un **contatore monotono** di doorbell, non una coda di
-eventi: la finestra condivisa e' un singolo slot che viene sovrascritto, quindi
-notifiche arretrate punterebbero tutte allo stesso dato. Il reader confronta col
-valore precedente e ricava da se' quante ne ha perse. Lo stato e' per file
-descriptor, cosi' due reader si svegliano entrambi.
+**Il seqlock sta nel kernel.** `read()` aspetta una doorbell nuova, legge `seq`,
+copia i 32 byte, `rmb()`, rilegge `seq`: se e' cambiato riprova. E' l'unico punto
+del sistema che conosce quel protocollo, quindi nessun consumatore puo' piu'
+sbagliarlo — e sbagliarlo era silenzioso: ottieni dati plausibili e strappati.
+Da fuori si vede un formato piatto di 32 byte, che Go e Python leggono senza
+`unsafe` ne' `mmap`.
+
+Il formato non contiene una coda di eventi: la finestra e' un singolo slot che
+viene sovrascritto, quindi notifiche arretrate punterebbero tutte allo stesso
+dato. Le perdite si ricavano dai salti di `seq`. Il contatore di doorbell, per
+chi vuole distinguere "campioni sovrascritti" da "notifiche accorpate", sta in
+`/sys/class/misc/duos-ipc/bell`. Lo stato di lettura e' per file descriptor,
+cosi' due reader si svegliano entrambi.
+
+**L'indirizzo arriva dal device tree.** Il driver e' un platform driver legato a
+`compatible = "corley,duos-ipc"` e ricava base e dimensione da `memory-region`,
+che punta allo stesso nodo che sottrae la finestra a Linux: riserva e mappatura
+non possono divergere. La mappatura e' `ioremap()`, non `memremap()`, perche'
+serve non cacheable — con una mappatura cacheable si leggono valori stantii in
+modo intermittente.
 
 ## Primo giro
 
@@ -210,9 +231,12 @@ l'ha compilata, quindi si entra dai sorgenti con `O=`.
 Sulla board:
 
 ```sh
-ipc-reader -1        # one-shot, verifica il magic
-ipc-reader -n 20     # 20 campioni, attesa sul doorbell
-ipc-reader -n 20 -P  # gli stessi, in polling: termine di confronto
+ipc-reader -1              # one-shot
+ipc-reader -n 20           # 20 campioni, attesa su poll()
+ipc-reader -n 20 -P        # gli stessi, in polling: termine di confronto
+ipc-reader --devmem -1     # scavalca il modulo (serve root)
+cat /sys/class/misc/duos-ipc/bell        # doorbell ricevute
+cat /sys/class/misc/duos-ipc/unexpected  # con cmd_id ignoto, deve essere 0
 /root/selftest.sh    # regressione, exit code 0 = ok
 ```
 
@@ -239,10 +263,13 @@ entra in conflitto.
 
 ## Le trappole di questa integrazione
 
-1. **I due core non sono cache-coherent.** Lato Linux `open("/dev/mem", O_SYNC)`
-   ti da' una mappatura uncached; lato RTOS serve un clean esplicito della
-   D-cache dopo ogni scrittura (`flush_dcache_range`). Sintomo tipico: valori
-   corretti all'inizio e poi stantii in modo intermittente.
+1. **I due core non sono cache-coherent.** Lato Linux il driver mappa la finestra
+   con `ioremap()`, che e' non cacheable — `memremap(MEMREMAP_WB)` non basta, e
+   `/dev/mem` funzionava solo grazie a `O_SYNC`, che sotto usa
+   `pgprot_noncached()`. Lato RTOS serve un clean esplicito della D-cache dopo
+   ogni scrittura (`flush_dcache_range`). Sintomo tipico: valori corretti
+   all'inizio e poi stantii in modo intermittente. Verificato su 300 campioni
+   consecutivi: nessun `seq` duplicato, `ts` sempre crescente.
 2. **`seq` e' la barriera di commit.** Scrivi il payload, `fence w,w`, poi
    incrementa `seq`. Il reader fa snapshot e ricontrolla `seq`: se e' cambiato,
    scarta il campione strappato. Invertire l'ordine e' silenziosamente rotto.
@@ -261,26 +288,34 @@ entra in conflitto.
    punto 2 di `selftest.sh` esiste, ed e' la lacuna che aveva lasciato passare la
    trappola 4.
 
-## Limite noto: `/dev/mem`
+## `/dev/mem` e' rimasto solo come diagnostica
 
-Il payload passa ancora da `/dev/mem`, quindi il reader vuole root **e** un
-kernel senza `CONFIG_STRICT_DEVMEM`. Non stai aprendo una finestra sui tuoi
-4 KiB: stai tenendo aperta la capacita' di leggere tutta la memoria fisica.
+Il percorso normale non lo usa: il device e' `0444` e il reader gira da utente
+qualunque. Leggere la finestra da userspace voleva dire root **e** un kernel
+senza `CONFIG_STRICT_DEVMEM`, cioe' poter leggere tutta la memoria fisica per
+averne 4 KiB. Su un banco di prova non se ne accorge nessuno; in campo e' una
+decisione di sicurezza che qualcuno prima o poi contesta.
 
-Su un banco di prova si sopravvive. Il passo successivo e' far uscire i dati dal
-device: `read()` restituisce la struct, il seqlock si sposta nel kernel dove
-nessun consumatore puo' piu' sbagliarlo, e il canale diventa leggibile da Go o
-Python senza `unsafe`.
+`ipc-reader --devmem` legge ancora la finestra scavalcando il modulo, e va tenuto:
+e' l'unico modo per distinguere **"il producer e' morto"** da **"il modulo e'
+rotto"**. Ma e' esplicito, e non c'e' nessun ripiego automatico — un fallback
+silenzioso ti fa credere che il canale funzioni mentre stai usando la strada
+vecchia, coi privilegi che credevi di aver tolto.
+
+`shared_msg.h` resta l'unica fonte della struct, e continua a servire al lato
+RTOS — che non ha un device tree da cui leggere l'indirizzo — e a `--devmem`.
 
 ## Roadmap
 
 - `v0-polling` ✔ — baseline: polling su `seq`, doorbell spenta. Il punto a cui
-  tornare quando qualcosa in v1 si rompe.
+  tornare quando qualcosa piu' avanti si rompe.
 - `v1-irq` ✔ — il reader si sveglia sull'interrupt del mailbox tramite
   `duos_ipc_irq` e `/dev/duos-ipc`.
-- **dati dal device** — `read()` restituisce la struct, via `/dev/mem` e root.
+- **dati dal device** ✔ — `read()` restituisce la struct, seqlock nel kernel,
+  indirizzo dal device tree, niente root.
 - `v2-ring` — ring buffer con seqlock al posto del singolo slot, per non
-  perdere campioni sopra i ~100 Hz.
+  perdere campioni sopra i ~100 Hz. Ora e' un cambio che vive **solo** nel
+  driver: il formato di `read()` non cambia e lo userspace non se ne accorge.
 
 ## Nota sui nomi dell'SDK
 
