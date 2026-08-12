@@ -132,6 +132,28 @@ make duos-ipc-rebuild && make duos-ipc-reinstall   # dentro output/ di Buildroot
 ./scripts/deploy.sh 192.168.42.1                   # oppure, tutto in uno
 ```
 
+> **Buildroot non si accorge che hai toccato `src/`.** Con
+> `SITE_METHOD = local` l'rsync dei sorgenti avviene **una volta sola** e poi e'
+> protetto da `.stamp_rsynced`. Da quel momento `build.sh` salta il pacchetto in
+> silenzio: nessun avviso, nessun errore, e l'immagine esce con il codice
+> vecchio. Vale anche per i file *nuovi* — e' cosi' che `src/kmod/` e' rimasto
+> fuori da un'immagine intera.
+>
+> Il metodo garantito e' cancellare la build dir del pacchetto:
+>
+> ```sh
+> rm -rf <sdk>/buildroot/output/<board>/build/duos-ipc-1.0
+> ```
+>
+> `duos-ipc-rebuild` e' piu' leggero ma **verifica che rifaccia l'rsync** sulla
+> tua revisione di Buildroot: confronta la data di
+> `build/duos-ipc-1.0/reader.c` con quella di `src/reader.c`. Se non combacia,
+> hai appena costruito il codice di ieri.
+>
+> Le modifiche al `rootfs-overlay/` non sono soggette a questo: quelle entrano
+> a ogni build. E' un'asimmetria che confonde, perche' vedi arrivare l'init
+> script aggiornato e concludi che sia arrivato tutto.
+
 Sulla board:
 
 ```sh
