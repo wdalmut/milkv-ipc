@@ -15,3 +15,4 @@ Module.symvers
 modules.order
 .tmp_versions/
 .repo-path
+examples/go-reader/ipc-reader-go
