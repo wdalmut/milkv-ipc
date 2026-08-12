@@ -37,6 +37,14 @@
  * Il costo: RTOS e Linux condividono la UART senza arbitraggio, quindi due
  * printf simultanei si intrecciano a meta' riga. Si vede gia' nel log di boot.
  * Con una riga sola all'avvio e' trascurabile; con un heartbeat frequente no.
+ *
+ * LIMITI DEL printf DELL'RTOS, verificati in common/src/riscv64/snprintf.c:
+ *  - gli specificatori sono solo l, p, x, d, s, c. %u NON esiste e non stampa
+ *    nulla, silenziosamente: e' il modo in cui un log sembra rotto mentre i dati
+ *    sono giusti;
+ *  - la larghezza e' ignorata: %02x stampa comunque 8 cifre con zeri davanti;
+ *  - il buffer e' 128 byte COMPRESO il prefisso [sec.usec], quindi righe lunghe
+ *    vengono troncate. Meglio due righe corte di una lunga.
  */
 #define IPC_RTOS_LOG   1
 #define IPC_LOG_EVERY  100 /* > 0: una riga ogni N pubblicazioni (100 = 10 s) */
@@ -191,7 +199,7 @@ static void sensor_task(void *arg)
         n++;
 #if IPC_RTOS_LOG && IPC_LOG_EVERY
         if ((n % IPC_LOG_EVERY) == 0)
-            printf("ipc: seq=%u\n", (unsigned int)n);
+            printf("ipc: seq=%d\n", (int)n);
 #else
         (void)n;
 #endif
@@ -236,17 +244,17 @@ void ipc_host_cmd_received(void)
 
         if (cmd.magic != CMD_MAGIC) {
 #if IPC_RTOS_LOG
-            printf("ipc: comando con magic 0x%08x, ignorato\n",
-                   (unsigned int)cmd.magic);
+            printf("ipc: cmd magic %x, ignorato\n", (int)cmd.magic);
 #endif
             return;
         }
 
 #if IPC_RTOS_LOG
-        printf("ipc: cmd seq=%u cmd=%u arg=0x%08x data=%02x %02x %02x %02x\n",
-               (unsigned int)cmd.seq, (unsigned int)cmd.cmd,
-               (unsigned int)cmd.arg,
-               cmd.data[0], cmd.data[1], cmd.data[2], cmd.data[3]);
+        printf("ipc: cmd seq=%d cmd=%d arg=%x\n",
+               (int)cmd.seq, (int)cmd.cmd, (int)cmd.arg);
+        printf("ipc: data %x %x %x %x\n",
+               (int)cmd.data[0], (int)cmd.data[1],
+               (int)cmd.data[2], (int)cmd.data[3]);
 #endif
         return;
     }
@@ -267,8 +275,8 @@ void ipc_sensor_task_create(void)
      * riga "log will not print" al boot, che invece c'e'.
      */
     dump_uart_disable();
-    printf("ipc: task avviato, shm=0x%08x, doorbell=%s\n",
-           (unsigned int)SHM_PHYS_ADDR, IPC_DOORBELL ? "on" : "off");
+    printf("ipc: task avviato, shm=%x, doorbell=%s\n",
+           (int)SHM_PHYS_ADDR, IPC_DOORBELL ? "on" : "off");
 #endif
 
     xTaskCreate(sensor_task, "sensor", configMINIMAL_STACK_SIZE * 2, NULL,
