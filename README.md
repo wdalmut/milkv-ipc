@@ -138,15 +138,27 @@ descriptor, cosi' due reader si svegliano entrambi.
 ## Primo giro
 
 ```sh
-./scripts/setup-sdk.sh          # clone + reset + 5 patch + symlink + defconfig
+REPO_PATH=/data ./scripts/setup-sdk.sh /sdk   # patch + symlink + defconfig
 
-export BR2_EXTERNAL=/data       # il path COME LO VEDE la build
+export BR2_EXTERNAL=/data                     # il path COME LO VEDE la build
 cd /sdk && ./build.sh milkv-duos-musl-riscv64-sd
 ```
 
-`BR2_EXTERNAL` deve essere il path visto da chi compila: dentro il container e'
-quello montato (`/data`), non quello dell'host. Se sbagli non ottieni un errore
-— ottieni un'immagine senza il pacchetto.
+**Due path, la stessa regola: contano come li vede chi compila.** Dentro il
+container questo repo e' `/data`, non `~/git/milkv-duos-ipc`, e i due nomi
+falliscono in modi diversi:
+
+- `BR2_EXTERNAL` sbagliato non da' errore. Da' un'immagine senza il pacchetto,
+  e te ne accorgi solo sulla board quando `ipc-reader` non c'e';
+- `REPO_PATH` sbagliato lo scopri subito, ma il messaggio non aiuta: i symlink
+  in `task/ipc/` sono **assoluti**, e se puntano all'host CMake si ferma su
+  `Cannot find source file: .../task/ipc/sensor_task.c`. Il file c'e', e'
+  il link che non risolve. Non esiste un path relativo che vada bene da
+  entrambi i lati, perche' `/sdk` e `/data` non hanno una radice comune con
+  `~/git/`.
+
+Se compili sull'host e basta, `./scripts/setup-sdk.sh` senza variabili fa la
+cosa giusta e verifica che i symlink risolvano.
 
 I nomi delle board stanno in `device/` dell'SDK: `milkv-duos-musl-riscv64-sd`
 (RISC-V, la variante di questo repo), `milkv-duos-glibc-arm64-sd`, piu' le due
