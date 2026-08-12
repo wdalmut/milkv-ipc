@@ -7,10 +7,14 @@ mailbox.
 Il mailbox del SG2000 trasporta solo 8 byte (`cmdqu_t`): non ci passi una
 struct. Il pattern e' **payload in memoria condivisa, notifica sul mailbox**.
 
-Il reader fa `read()` su `/dev/duos-ipc`: dorme fino al campione successivo e
-riceve la struct gia' verificata. Non serve root, e il costo dell'attesa e' zero
-— 20 campioni a 10 Hz in 1.95 s reali con `sys 0.00s`. Verificato su
-`duo-buildroot-sdk-v2` a `v2.0.1`.
+Il canale e' **bidirezionale** e passa tutto da un solo device, `/dev/duos-ipc`:
+
+- `read()` dorme fino al campione successivo dal micro e restituisce la struct
+  gia' verificata. Non serve root, e il costo dell'attesa e' zero — 20 campioni a
+  10 Hz in 1.95 s reali con `sys 0.00s`;
+- `write()` manda un comando al micro, payload compreso.
+
+Verificato su `duo-buildroot-sdk-v2` a `v2.0.1`.
 
 ## Creazione del container di lavoro
 
@@ -27,7 +31,7 @@ milkvtech/milkv-duo:latest /bin/bash
 
 ## Il principio: l'SDK e' rigenerabile, non versionato
 
-```
+```text
 SDK = SDK_REF (sdk.lock)  +  sdk-patches/*.patch  +  symlink di rtos/
 ```
 
@@ -50,31 +54,37 @@ rootfs della board.
 
 ## Struttura
 
-```
+```text
 duos-ipc/
 ├── sdk.lock                 URL + tag dell'SDK + target
 ├── sdk-patches/             ⚑ le tue modifiche AI FILE DELL'SDK
 │   ├── 0001-freertos-build-ipc-task.patch      compila task/ipc/ dentro "comm"
 │   ├── 0002-freertos-start-ipc-task.patch      avvia il task da main_cvirtos()
-│   ├── 0003-dts-reserved-memory.patch          sottrae la finestra a Linux
+│   ├── 0003-dts-reserved-memory.patch          finestra riservata + consumatore
 │   ├── 0004-freertos-mailbox-full-not-fatal.patch
-│   └── 0005-buildroot-propagate-br2-external.patch
+│   ├── 0005-buildroot-propagate-br2-external.patch
+│   └── 0006-freertos-route-host-command.patch  instrada i comandi dall'host
 │
 ├── external.desc            albero BR2_EXTERNAL: nome e descrizione
 ├── external.mk              raccoglie i .mk sotto package/
 ├── Config.in                aggancia i package al menuconfig
 │
 ├── src/                     cio' che Buildroot compila (SITE_METHOD=local)
-│   ├── shared/shared_msg.h  ⚑ unica fonte di verita' della struct
-│   ├── reader.c             consumer userspace
-│   ├── kmod/duos_ipc_irq.c  modulo doorbell -> /dev/duos-ipc
+│   ├── shared/shared_msg.h  ⚑ unica fonte di verita' delle due struct
+│   ├── reader.c             consumer: micro -> Linux
+│   ├── ipc_cmd.c            comandi: Linux -> micro
+│   ├── kmod/duos_ipc_irq.c  il device, entrambi i versi
 │   └── Makefile
 │
-├── package/duos-ipc/        ricetta Buildroot -> /usr/bin/ipc-reader + .ko
+├── package/duos-ipc/        ricetta Buildroot -> ipc-reader, ipc-cmd, .ko
 │   ├── Config.in
 │   └── duos-ipc.mk
 │
-├── rtos/sensor_task.c       producer FreeRTOS (symlinkato nell'SDK)
+├── rtos/sensor_task.c       lato FreeRTOS: pubblica e riceve comandi
+│
+├── examples/go-reader/      consumer in Go: prova che basta read()
+│   ├── main.go
+│   └── Makefile
 │
 ├── board/duos/
 │   ├── rootfs-overlay/root/selftest.sh          regressione con exit code
@@ -156,6 +166,56 @@ non possono divergere. La mappatura e' `ioremap()`, non `memremap()`, perche'
 serve non cacheable — con una mappatura cacheable si leggono valori stantii in
 modo intermittente.
 
+## Il verso opposto: Linux → micro
+
+Stessa pagina riservata, seconda finestra a **offset 2048**: la prima usa 32 byte
+su 4096, quindi non c'e' stato niente da aggiungere al device tree.
+
+```text
+userspace                  duos_ipc_irq.ko                  sensor_task (C906)
+  write() = 32 B ─► finestra a +2048, wmb(), seq++ ──► inv_dcache + seqlock
+  su /dev/duos-ipc         │                                      ▲
+                           │ rtos_cmdqu_send()                    │
+                           ▼   cmd_id=0x41                        │
+                         mailbox ──► prvQueueISR ──► E_QUEUE_CMDQU┘
+                                                    case CMD_HOST_READY
+```
+
+**Meta' dell'infrastruttura c'era gia'.** In questo verso l'RTOS riceve di suo:
+`prvQueueISR()` smista per `ip_id` sulle code FreeRTOS, e da Linux
+`rtos_cmdqu_send()` e' esportata. Non e' stato costruito niente, e' stato usato.
+
+**La cache va nel verso opposto, ed e' il pezzo delicato.** In `publish()` il
+micro scrive e ripulisce dopo (`flush_dcache_range`). Qui **legge**, quindi deve
+invalidare prima — `inv_dcache_range()`, che sul port riscv64 si chiama cosi':
+`invalidate_dcache_range()` e' il nome arm64 e per il C906 non esiste.
+
+Due dettagli che non si vedono guardando il codice dell'altro verso:
+
+- l'invalidate sta **dentro** il ciclo di retry e ci sta **due volte**, perche'
+  anche `seq` vive nella regione cacheata. Senza il secondo, la rilettura di `seq`
+  arriverebbe dalla cache popolata dalla `memcpy`, sarebbe per forza uguale alla
+  prima, e accetteremmo un campione strappato credendo di averlo verificato: un
+  controllo che sembra funzionare e non controlla nulla;
+- le due finestre restano a **scrittore singolo**, e non e' stile. Un invalidate
+  non e' un flush: butta le righe sporche senza scriverle. Se il micro scrivesse
+  nella finestra dei comandi, perderebbe i propri dati.
+
+**`case CMD_HOST_READY` non e' opzionale** (patch 0006). Il ramo `default` dello
+switch rimanda il messaggio a Linux — e' cosi' che funziona la doorbell nell'altro
+verso — quindi un comando appena ricevuto tornerebbe al mittente, che lo vedrebbe
+arrivare come una notifica del micro.
+
+**I requisiti sono invertiti rispetto alla telemetria.** Un campione perso non e'
+grave, ne arriva un altro fra 100 ms; un comando perso e' un guasto silenzioso.
+Qui la finestra e' ancora a slot singolo e la doorbell e' fire-and-forget: va
+bene per un banco di prova, non per comandi che devono arrivare. Chi ha bisogno di
+garanzie usi `RTOS_CMDQU_SEND_WAIT`, che l'SDK implementa gia' — e che in questo
+verso e' esattamente lo strumento giusto, mentre in ingresso era inutile.
+
+**Scrivere richiede root**, il device e' `0444`. Leggere dati di sensori e
+comandare il micro non hanno lo stesso peso: l'asimmetria e' voluta.
+
 ## Il formato sul filo
 
 `read()` restituisce 32 byte, little-endian, con gli offset dichiarati in
@@ -218,6 +278,25 @@ Un'insidia se ti scrivi un parser: nel dump sopra i 4 byte alti di `ts_us` sono
 zero, perche' 337 secondi stanno in 32 bit. Smettono di esserlo a circa 72
 minuti di uptime. `ts_us` e' a 64 bit e va letto come tale, anche se un dump
 preso nei primi minuti suggerisce il contrario.
+
+Nell'altro verso, `write()` vuole esattamente 32 byte di `host_cmd_t`:
+
+| offset | campo | tipo | note |
+| --- | --- | --- | --- |
+| 0 | `magic` | `uint32` | lo mette il **driver**, non chi scrive |
+| 4 | `seq` | `uint32` | idem: cresce di uno a ogni `write()` |
+| 8 | `cmd` | `uint32` | cosa fare |
+| 12 | `arg` | `uint32` | parametro |
+| 16 | `data[16]` | `uint8[]` | payload libero |
+
+`magic` e `seq` non sono di chi scrive di proposito: un programma non puo'
+pubblicare un blocco malformato ne' far arretrare `seq`, che dal lato micro
+sembrerebbe un comando mai arrivato. Chi scrive riempie solo `cmd`, `arg` e
+`data`.
+
+`seq` e' anche il modo per capire se il seqlock regge in questo verso: manda due
+comandi e il micro deve stampare `seq=00000001` e poi `seq=00000002`. Due volte
+lo stesso numero significa che sta leggendo dalla cache.
 
 ## Primo giro
 
@@ -300,8 +379,22 @@ ipc-reader -n 20 -P        # gli stessi, in polling: termine di confronto
 ipc-reader --devmem -1     # scavalca il modulo (serve root)
 cat /sys/class/misc/duos-ipc/bell        # doorbell ricevute
 cat /sys/class/misc/duos-ipc/unexpected  # con cmd_id ignoto, deve essere 0
-/root/selftest.sh    # regressione, exit code 0 = ok
+/root/selftest.sh          # regressione, exit code 0 = ok
 ```
+
+Verso opposto, con la seriale aperta:
+
+```sh
+ipc-cmd                          # elenco dei comandi noti
+ipc-cmd rtos-log-on              # il micro parla in console (manda DUMP_DIS)
+ipc-cmd rtos-log-off             # smette (manda DUMP_EN)
+ipc-cmd send 1 0x2a 0xde 0xad    # comando con payload nella finestra
+ipc-cmd raw <ip_id> <cmd_id>     # qualunque cmd_id, per esplorare
+```
+
+Non tenere `ipc-reader` sulla console mentre guardi il micro: RTOS e Linux
+condividono la UART senza arbitraggio e le righe si tagliano a meta'. Manda il
+reader su file (`ipc-reader -n 20 > /tmp/x`) o entra in ssh.
 
 ## Quando una release Sophgo rompe le patch
 
@@ -350,6 +443,19 @@ entra in conflitto.
    Solo due letture distanziate mostrano che `seq` non avanza — per questo il
    punto 2 di `selftest.sh` esiste, ed e' la lacuna che aveva lasciato passare la
    trappola 4.
+6. **Nel verso opposto la cache si gira: `inv` e non `flush`.** Il micro legge, e
+   deve invalidare **prima**, non ripulire dopo. Due volte per giro di retry,
+   perche' anche `seq` e' cacheato: senza il secondo invalidate il ricontrollo di
+   `seq` legge dalla cache, torna per forza uguale, e valida un campione
+   strappato. E le due finestre devono restare a scrittore singolo, perche' un
+   invalidate butta le righe sporche senza scriverle.
+7. **Il `printf` dell'RTOS non e' quello che credi.** In
+   `common/src/riscv64/snprintf.c` gli specificatori sono solo `l p x d s c`:
+   **`%u` non esiste e non stampa nulla**, in silenzio. La larghezza e' ignorata
+   (`%02x` stampa 8 cifre). Il buffer e' 128 byte compreso il prefisso
+   `[sec.usec]`, quindi le righe lunghe vengono troncate. Un log che sembra
+   corrotto mentre i dati sono giusti e' quasi sempre questo — conviene leggerlo
+   byte per byte prima di sospettare il canale.
 
 ## `/dev/mem` e' rimasto solo come diagnostica
 
@@ -376,9 +482,15 @@ RTOS — che non ha un device tree da cui leggere l'indirizzo — e a `--devmem`
   `duos_ipc_irq` e `/dev/duos-ipc`.
 - **dati dal device** ✔ — `read()` restituisce la struct, seqlock nel kernel,
   indirizzo dal device tree, niente root.
+- **verso opposto** ✔ — `write()` manda comandi al micro con payload, seconda
+  finestra a offset 2048. Slot singolo e fire-and-forget: va bene per un banco di
+  prova, non per comandi che devono arrivare.
 - `v2-ring` — ring buffer con seqlock al posto del singolo slot, per non
   perdere campioni sopra i ~100 Hz. Ora e' un cambio che vive **solo** nel
   driver: il formato di `read()` non cambia e lo userspace non se ne accorge.
+- **`drops` e' morto**: il producer lo passa sempre a 0, quindi le perdite lato
+  RTOS non si vedono. E' il complemento di `v2-ring` — il ring conta i campioni
+  persi dal consumatore, `drops` quelli persi dal produttore.
 
 ## Nota sui nomi dell'SDK
 
@@ -392,6 +504,25 @@ rispetto a quanto trovi in giro:
   `freertos/cvitek/task/comm/src/riscv64/comm_main.c`. `task/main/src/main.c` si
   limita a chiamarlo.
 - **`cmd_id` e' un bitfield a 7 bit**: sotto 128, o lo tronchi in silenzio.
+- **`dump_uart_enable()` non accende il log, lo spegne.** Abilita la cattura in
+  un buffer e mette `uart_putc_enable = 0`. Quella che fa parlare il micro sulla
+  seriale e' `dump_uart_disable()`. I nomi si riferiscono alla feature di
+  cattura, non alla stampa, e suggeriscono attivamente la cosa sbagliata: le
+  scorciatoie di `ipc-cmd` (`rtos-log-on`/`off`) nascondono l'inversione in un
+  posto solo.
+
+## Nota sui flag di debug
+
+`rtos/sensor_task.c` ha tre interruttori a inizio file:
+
+| flag | stato | cosa fa |
+| --- | --- | --- |
+| `IPC_DOORBELL` | 1 | la doorbell verso Linux. A 0 torni a v0-polling |
+| `IPC_RTOS_LOG` | 1 | il micro parla sulla seriale |
+| `IPC_LOG_EVERY` | 100 | un battito ogni N pubblicazioni (10 s a 10 Hz) |
+
+Gli ultimi due sono per il debug e intrecciano l'output con la console di Linux:
+mettili a 0 quando non ti servono. Nessun altro file va toccato.
 
 Verifica in `cvi_mailbox.h` e `rtos_cmdqu.h` del tuo tree prima di dare per
 buono il codice del task.
