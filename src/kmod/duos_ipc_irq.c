@@ -28,6 +28,7 @@
 #include <linux/fs.h>
 #include <linux/io.h>
 #include <linux/miscdevice.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/platform_device.h>
@@ -53,6 +54,8 @@ struct duos_ipc {
 	wait_queue_head_t	wq;
 	atomic_t		bell;		/* doorbell ricevute, monotono */
 	atomic_t		unexpected;	/* doorbell con cmd_id ignoto  */
+	struct mutex		tx_lock;	/* serializza le write()       */
+	u32			cmd_seq;	/* seq della finestra in uscita */
 };
 
 /*
@@ -184,6 +187,71 @@ static ssize_t duos_ipc_read(struct file *filp, char __user *buf, size_t len,
 	return sizeof(snap);
 }
 
+/*
+ * Verso opposto: un comando dall'host al micro.
+ *
+ * Stesso protocollo dell'altro senso, a ruoli invertiti: si scrive il payload,
+ * barriera, poi si incrementa seq - che e' il commit. Poi si suona la doorbell
+ * con rtos_cmdqu_send(), esportata da cv181x_rtos_cmdqu.
+ *
+ * magic e seq li mette il driver, non userspace: cosi' un programma non puo'
+ * pubblicare un blocco con un magic sbagliato ne' far arretrare seq, che dal
+ * lato micro sembrerebbe un comando mai arrivato.
+ *
+ * Il mutex serializza fra piu' scrittori. Non protegge dal micro, che questa
+ * regione non la scrive mai - ed e' proprio quella garanzia che gli permette di
+ * invalidare la cache senza perdere nulla.
+ */
+static ssize_t duos_ipc_write(struct file *filp, const char __user *buf,
+			      size_t len, loff_t *off)
+{
+	struct duos_ipc *ipc = g_ipc;
+	void __iomem *win = ipc->shm + CMD_SHM_OFFSET;
+	host_cmd_t cmd;
+	cmdqu_t bell;
+	int ret;
+
+	if (len != sizeof(cmd))
+		return -EINVAL;
+
+	if (CMD_SHM_OFFSET + sizeof(cmd) > ipc->shm_size)
+		return -ENOSPC;
+
+	if (copy_from_user(&cmd, buf, sizeof(cmd)))
+		return -EFAULT;
+
+	mutex_lock(&ipc->tx_lock);
+
+	iowrite32(CMD_MAGIC, win + offsetof(host_cmd_t, magic));
+	iowrite32(cmd.cmd, win + offsetof(host_cmd_t, cmd));
+	iowrite32(cmd.arg, win + offsetof(host_cmd_t, arg));
+	memcpy_toio(win + offsetof(host_cmd_t, data), cmd.data, CMD_DATA_LEN);
+
+	/* Il payload deve essere in DRAM prima che seq lo dichiari valido. */
+	wmb();
+	iowrite32(++ipc->cmd_seq, win + offsetof(host_cmd_t, seq));
+	wmb();
+
+	memset(&bell, 0, sizeof(bell));
+	bell.ip_id = IP_SYSTEM;
+	bell.cmd_id = CMD_HOST_READY;
+	bell.block = 0;
+	bell.param_ptr = 0;
+
+	ret = rtos_cmdqu_send(&bell);
+	mutex_unlock(&ipc->tx_lock);
+
+	if (ret) {
+		/* Il payload e' in finestra ma il micro non lo sa. Non e'
+		 * recuperabile da qui: chi scrive decide se ritentare. */
+		dev_warn_ratelimited(ipc->misc.this_device,
+				     "doorbell verso il micro fallita: %d\n", ret);
+		return ret;
+	}
+
+	return sizeof(cmd);
+}
+
 static __poll_t duos_ipc_poll(struct file *filp, poll_table *wait)
 {
 	struct bell_reader *r = filp->private_data;
@@ -207,6 +275,7 @@ static const struct file_operations duos_ipc_fops = {
 	.open		= duos_ipc_open,
 	.release	= duos_ipc_release,
 	.read		= duos_ipc_read,
+	.write		= duos_ipc_write,
 	.poll		= duos_ipc_poll,
 	.llseek		= no_llseek,
 };
@@ -293,14 +362,19 @@ static int duos_ipc_probe(struct platform_device *pdev)
 	ipc->shm_size = resource_size(&res);
 
 	init_waitqueue_head(&ipc->wq);
+	mutex_init(&ipc->tx_lock);
 	atomic_set(&ipc->bell, 0);
 	atomic_set(&ipc->unexpected, 0);
 
 	ipc->misc.minor = MISC_DYNAMIC_MINOR;
 	ipc->misc.name = DEV_NAME;
 	ipc->misc.fops = &duos_ipc_fops;
-	/* 0444: sono letture di sensori, non ci sono segreti. E' cio' che rende
-	 * vera l'affermazione "non serve root". */
+	/*
+	 * 0444: leggere i dati del sensore non richiede privilegi, ed e' cio'
+	 * che rende vera l'affermazione "non serve root". Scrivere comandi al
+	 * micro invece resta a root, che scavalca i permessi: e' asimmetrico di
+	 * proposito, perche' le due operazioni non hanno lo stesso peso.
+	 */
 	ipc->misc.mode = 0444;
 	ipc->misc.groups = duos_ipc_groups;
 

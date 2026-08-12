@@ -53,4 +53,38 @@ typedef struct {
     uint32_t _pad;       /* padding esplicito -> sizeof == 32           */
 } __attribute__((packed, aligned(8))) sensor_msg_t;
 
+/*
+ * ---------------------------------------------------------------------------
+ * Verso opposto: Linux -> FreeRTOS.
+ * ---------------------------------------------------------------------------
+ *
+ * Seconda finestra nella STESSA pagina riservata: la prima usa 32 byte su 4096.
+ * Nessun DTS da toccare, nessuna riserva nuova.
+ *
+ * Le due regioni devono restare a SCRITTORE SINGOLO, e non e' una questione di
+ * stile: il micro legge questa regione con la cache, quindi prima di leggere fa
+ * inv_dcache_range(). Un invalidate non e' un flush - butta via le righe sporche
+ * senza scriverle. Se il micro scrivesse anche qui, perderebbe i propri dati.
+ *
+ * Requisiti opposti a quelli della telemetria: un campione perso non e' grave,
+ * ne arriva un altro fra 100 ms. Un comando perso e' un guasto silenzioso. Chi
+ * ha bisogno di garanzie usi RTOS_CMDQU_SEND_WAIT, che l'SDK implementa gia'.
+ */
+#define CMD_SHM_OFFSET  2048u
+#define CMD_MAGIC       0xC0FFEE02u
+#define CMD_DATA_LEN    16u
+
+/* Doorbell in questo verso. Distinto da CMD_SENSOR_READY e sotto 128, perche'
+ * cmd_id nel cmdqu_t e' un bitfield a 7 bit. */
+#define CMD_HOST_READY  0x41u
+
+typedef struct {
+    uint32_t magic;                 /* CMD_MAGIC quando il blocco e' valido   */
+    uint32_t seq;                   /* incrementato DOPO il payload: e' il     */
+                                    /* commit, come nell'altro verso           */
+    uint32_t cmd;                   /* cosa fare                               */
+    uint32_t arg;                   /* parametro                               */
+    uint8_t  data[CMD_DATA_LEN];    /* payload libero                          */
+} __attribute__((packed, aligned(8))) host_cmd_t;
+
 #endif /* SHARED_MSG_H */

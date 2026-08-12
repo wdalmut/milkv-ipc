@@ -15,9 +15,8 @@ all: $(BINS)
 reader: reader.c shared/shared_msg.h
 	$(CC) $(CFLAGS) -o $@ reader.c $(LDFLAGS)
 
-# Non include shared_msg.h: manda comandi da 8 byte sul mailbox e non tocca la
-# finestra condivisa.
-ipc_cmd: ipc_cmd.c
+# Usa shared_msg.h per host_cmd_t: il sottocomando `send` scrive nella finestra.
+ipc_cmd: ipc_cmd.c shared/shared_msg.h
 	$(CC) $(CFLAGS) -o $@ ipc_cmd.c $(LDFLAGS)
 
 clean:

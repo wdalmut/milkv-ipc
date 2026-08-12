@@ -55,12 +55,24 @@ extern void dump_uart_disable(void);
 static volatile sensor_msg_t *const g_shm =
         (volatile sensor_msg_t *)(uintptr_t)SHM_PHYS_ADDR;
 
+/* Seconda finestra, nella stessa pagina: qui scrive Linux e leggiamo noi. */
+static volatile host_cmd_t *const g_cmd =
+        (volatile host_cmd_t *)(uintptr_t)(SHM_PHYS_ADDR + CMD_SHM_OFFSET);
+
 /*
  * Dichiarata in arch/riscv64/include/arch_helpers.h. La ripetiamo qui invece
  * di includere l'header perche' non e' fra quelli installati in
  * install/include/ visti dalla libreria "comm".
  */
 extern void flush_dcache_range(uintptr_t addr, size_t size);
+
+/*
+ * Per il verso opposto serve l'INVALIDATE, non il flush: qui il micro legge, e
+ * deve buttare le proprie righe di cache per vedere cio' che ha scritto Linux.
+ * Sul port riscv64 si chiama inv_dcache_range() - invalidate_dcache_range() e'
+ * il nome arm64 e non esiste per il C906.
+ */
+extern void inv_dcache_range(uintptr_t addr, size_t size);
 
 static uint64_t now_us(void)
 {
@@ -186,6 +198,62 @@ static void sensor_task(void *arg)
 
         vTaskDelay(pdMS_TO_TICKS(100));   /* 10 Hz */
     }
+}
+
+/*
+ * Un comando e' arrivato da Linux.
+ *
+ * Chiamata da prvCmdQuRunTask() (patch 0006), quindi in contesto task e non in
+ * ISR: printf e' lecito.
+ *
+ * La cache va nel verso opposto rispetto a publish(): la' scriviamo e ripuliamo
+ * dopo, qui leggiamo e dobbiamo invalidare prima. E l'invalidate va DENTRO il
+ * ciclo di retry, due volte per giro, perche' anche `seq` sta nella regione
+ * cacheata: senza il secondo invalidate rileggeremmo seq dalla cache, otterremmo
+ * per forza lo stesso valore, e accetteremmo un campione strappato credendo di
+ * averlo verificato. E' un controllo che sembra funzionare e non controlla nulla.
+ */
+void ipc_host_cmd_received(void)
+{
+    host_cmd_t cmd;
+    int i;
+
+    for (i = 0; i < 5; i++) {
+        uint32_t seq0, seq1;
+
+        inv_dcache_range((uintptr_t)g_cmd, sizeof(*g_cmd));
+        seq0 = g_cmd->seq;
+
+        memcpy(&cmd, (const void *)g_cmd, sizeof(cmd));
+        __asm__ volatile ("fence r, r" ::: "memory");
+
+        /* Secondo invalidate: serve a poter VEDERE un seq nuovo. */
+        inv_dcache_range((uintptr_t)g_cmd, sizeof(*g_cmd));
+        seq1 = g_cmd->seq;
+
+        if (seq0 != seq1)
+            continue;
+
+        if (cmd.magic != CMD_MAGIC) {
+#if IPC_RTOS_LOG
+            printf("ipc: comando con magic 0x%08x, ignorato\n",
+                   (unsigned int)cmd.magic);
+#endif
+            return;
+        }
+
+#if IPC_RTOS_LOG
+        printf("ipc: cmd seq=%u cmd=%u arg=0x%08x data=%02x %02x %02x %02x\n",
+               (unsigned int)cmd.seq, (unsigned int)cmd.cmd,
+               (unsigned int)cmd.arg,
+               cmd.data[0], cmd.data[1], cmd.data[2], cmd.data[3]);
+#endif
+        return;
+    }
+
+#if IPC_RTOS_LOG
+    printf("ipc: comando sempre strappato dopo 5 tentativi\n");
+#endif
 }
 
 void ipc_sensor_task_create(void)

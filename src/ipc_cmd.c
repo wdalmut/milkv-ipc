@@ -21,7 +21,10 @@
 #include <errno.h>
 #include <sys/ioctl.h>
 
+#include "shared/shared_msg.h"
+
 #define CMDQU_DEV "/dev/cvi-rtos-cmdqu"
+#define IPC_DEV   "/dev/duos-ipc"
 
 /* _IOW('r', CMDQU_SEND, unsigned long) con CMDQU_SEND = 1. L'argomento e' un
  * puntatore a cmdqu_t: il driver ci fa copy_from_user. */
@@ -87,13 +90,72 @@ static void usage(const char *argv0)
 {
     size_t i;
 
-    fprintf(stderr, "uso: %s <comando> [param]\n", argv0);
-    fprintf(stderr, "     %s raw <ip_id> <cmd_id> [param]\n\n", argv0);
+    fprintf(stderr, "uso: %s <comando> [param]          (via mailbox, 8 byte)\n", argv0);
+    fprintf(stderr, "     %s raw <ip_id> <cmd_id> [param]\n", argv0);
+    fprintf(stderr, "     %s send <cmd> <arg> [byte...] (via finestra condivisa)\n\n",
+            argv0);
     fprintf(stderr, "comandi noti:\n");
     for (i = 0; i < sizeof(known) / sizeof(known[0]); i++)
         fprintf(stderr, "  %-14s %s\n", known[i].name, known[i].help);
-    fprintf(stderr, "\nIl comando e' fire-and-forget: il mailbox non porta una"
+    fprintf(stderr, "\n`send` scrive %zu byte su %s: il driver mette magic e seq,\n"
+                    "poi suona la doorbell. Fino a %u byte di payload libero.\n",
+            sizeof(host_cmd_t), IPC_DEV, CMD_DATA_LEN);
+    fprintf(stderr, "\nTutto e' fire-and-forget: il mailbox non porta una"
                     " conferma.\nCe la dice solo l'effetto sul micro.\n");
+}
+
+/*
+ * Comando attraverso la finestra condivisa. magic e seq NON si mettono qui: li
+ * scrive il driver, cosi' un programma non puo' pubblicare un blocco malformato
+ * ne' far arretrare seq. Noi riempiamo solo cmd, arg e data.
+ */
+static int send_window(int argc, char **argv)
+{
+    host_cmd_t cmd;
+    ssize_t n;
+    int fd, i;
+
+    if (argc < 4) {
+        usage(argv[0]);
+        return 2;
+    }
+
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.cmd = (uint32_t)strtoul(argv[2], NULL, 0);
+    cmd.arg = (uint32_t)strtoul(argv[3], NULL, 0);
+
+    for (i = 4; i < argc && (i - 4) < (int)CMD_DATA_LEN; i++)
+        cmd.data[i - 4] = (uint8_t)strtoul(argv[i], NULL, 0);
+
+    if (argc - 4 > (int)CMD_DATA_LEN)
+        fprintf(stderr, "# %d byte in eccesso, ignorati (max %u)\n",
+                argc - 4 - (int)CMD_DATA_LEN, CMD_DATA_LEN);
+
+    fd = open(IPC_DEV, O_WRONLY);
+    if (fd < 0) {
+        perror("open " IPC_DEV);
+        fprintf(stderr, "il modulo duos_ipc_irq e' caricato? E scrivere richiede"
+                        " root: il device e' 0444.\n");
+        return 1;
+    }
+
+    /* Il driver accetta esattamente sizeof(host_cmd_t): una write parziale non
+     * ha senso su un messaggio che deve essere atomico. */
+    n = write(fd, &cmd, sizeof(cmd));
+    if (n != (ssize_t)sizeof(cmd)) {
+        if (n < 0)
+            perror("write " IPC_DEV);
+        else
+            fprintf(stderr, "write parziale: %zd byte\n", n);
+        close(fd);
+        return 1;
+    }
+    close(fd);
+
+    printf("inviato in finestra: cmd=%u arg=0x%08x data[0..3]=%02x %02x %02x %02x\n",
+           cmd.cmd, cmd.arg, cmd.data[0], cmd.data[1], cmd.data[2], cmd.data[3]);
+
+    return 0;
 }
 
 int main(int argc, char **argv)
@@ -106,6 +168,9 @@ int main(int argc, char **argv)
         usage(argv[0]);
         return 2;
     }
+
+    if (!strcmp(argv[1], "send"))
+        return send_window(argc, argv);
 
     memset(&cmd, 0, sizeof(cmd));
 

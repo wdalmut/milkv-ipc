@@ -1,0 +1,61 @@
+From: duos-ipc <noreply@corley.it>
+Subject: [PATCH 6/6] freertos: instrada il comando dall'host
+
+Un case per CMD_HOST_READY nello switch di prvCmdQuRunTask(), che chiama
+ipc_host_cmd_received() in task/ipc/.
+
+Il case proprio non e' opzionale: il ramo default rimanda il messaggio a Linux -
+e' cosi' che funziona la doorbell nel verso RTOS->Linux - quindi un comando
+appena ricevuto tornerebbe indietro al mittente, e il mittente lo vedrebbe
+arrivare come se fosse una notifica del micro.
+
+La gestione sta nel task, non nell'ISR: prvCmdQuRunTask e' un task FreeRTOS,
+quindi la lettura della finestra condivisa e i printf sono leciti. L'ISR
+(prvQueueISR) si limita a smistare per ip_id, come fa per tutti gli altri.
+
+CMD_HOST_READY arriva da shared_msg.h, che e' raggiungibile perche' la patch
+0001 mette task/ipc sulla include path della libreria comm. Includerlo invece di
+ricopiare il valore evita l'unico tipo di disallineamento che qui non darebbe
+errore: un cmd_id diverso fra i due lati significa comandi che partono e non
+arrivano, senza che nessuno se ne accorga.
+
+Generata contro v2.0.1.
+
+diff --git a/freertos/cvitek/task/comm/src/riscv64/comm_main.c b/freertos/cvitek/task/comm/src/riscv64/comm_main.c
+index ed1a419ce..dd7353f46 100644
+--- a/freertos/cvitek/task/comm/src/riscv64/comm_main.c
++++ b/freertos/cvitek/task/comm/src/riscv64/comm_main.c
+@@ -20,6 +20,10 @@
+ #include "comm.h"
+ #include "cvi_spinlock.h"
+ 
++/* duos-ipc: contratto condiviso col repo duos-ipc (task/ipc/ e' un symlink).
++ * Da' CMD_HOST_READY, cosi' il cmd_id non e' duplicato a mano qui. */
++#include "shared_msg.h"
++
+ //#define __DEBUG__
+ 
+ #ifdef __DEBUG__
+@@ -50,6 +54,8 @@ void prvCmdQuRunTask(void *pvParameters);
+  * mailbox). Definito in task/ipc/sensor_task.c, symlinkato dal repo duos-ipc
+  * da scripts/install-rtos.sh. */
+ extern void ipc_sensor_task_create(void);
++/* duos-ipc: gestisce un comando arrivato da Linux nella finestra condivisa. */
++extern void ipc_host_cmd_received(void);
+ 
+ /****************************************************************************
+  * Global parameters
+@@ -248,6 +254,13 @@ void prvCmdQuRunTask(void *pvParameters)
+ 				rtos_cmdq.param_ptr = (unsigned int) dump_uart_msg();
+ 				goto send_label;
+ 				break;
++			/* duos-ipc: comando dall'host nella finestra condivisa.
++			 * Deve avere un case proprio: il ramo default rimanda il
++			 * messaggio a Linux, e un comando appena ricevuto tornerebbe
++			 * indietro al mittente. */
++			case CMD_HOST_READY:
++				ipc_host_cmd_received();
++				break;
+ 			case SYS_CMD_INFO_LINUX_INIT_DONE:
+ 				rtos_cmdq.cmd_id = SYS_CMD_INFO_RTOS_INIT_DONE;
+ 				rtos_cmdq.param_ptr = &transfer_config;
