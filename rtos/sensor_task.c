@@ -39,7 +39,7 @@
  * Con una riga sola all'avvio e' trascurabile; con un heartbeat frequente no.
  */
 #define IPC_RTOS_LOG   1
-#define IPC_LOG_EVERY  0   /* > 0: una riga ogni N pubblicazioni */
+#define IPC_LOG_EVERY  100 /* > 0: una riga ogni N pubblicazioni (100 = 10 s) */
 
 #if IPC_RTOS_LOG
 /* Dichiarata in driver/uart/include/dump_uart.h, che non e' sulla include path

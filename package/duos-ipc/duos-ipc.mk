@@ -18,6 +18,7 @@ endef
 
 define DUOS_IPC_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(@D)/reader $(TARGET_DIR)/usr/bin/ipc-reader
+	$(INSTALL) -D -m 0755 $(@D)/ipc_cmd $(TARGET_DIR)/usr/bin/ipc-cmd
 endef
 
 ifeq ($(BR2_PACKAGE_DUOS_IPC_KMOD),y)
