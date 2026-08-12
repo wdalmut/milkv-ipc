@@ -156,6 +156,61 @@ non possono divergere. La mappatura e' `ioremap()`, non `memremap()`, perche'
 serve non cacheable — con una mappatura cacheable si leggono valori stantii in
 modo intermittente.
 
+## Il formato sul filo
+
+`read()` restituisce 32 byte, little-endian, con gli offset dichiarati in
+`shared_msg.h`. Niente header, niente lunghezza variabile: un `hexdump -C
+/dev/duos-ipc` sulla board da' due campioni consecutivi cosi'.
+
+```text
+01 ee ff c0  33 0d 00 00  56 a0 00 00  a8 03 00 00
+d8 a5 22 14  00 00 00 00  00 00 00 00  00 00 00 00
+
+01 ee ff c0  34 0d 00 00  11 a0 00 00  b0 04 00 00
+78 2c 24 14  00 00 00 00  00 00 00 00  00 00 00 00
+```
+
+| offset | campo | tipo | primo record |
+| --- | --- | --- | --- |
+| 0 | `magic` | `uint32` | `0xC0FFEE01` |
+| 4 | `seq` | `uint32` | 3379 |
+| 8 | `temp_mC` | `int32` | 41046 → 41,046 °C |
+| 12 | `vib_rms` | `uint32` | 936 |
+| 16 | `ts_us` | `uint64` | 337 815 000 → 337,815 s |
+| 24 | `drops` | `uint32` | 0 |
+| 28 | `_pad` | `uint32` | 0 |
+
+**Come si legge un dump per capire se il canale e' sano.** Fra i due record
+`Δseq = 1` e `Δts = 100 000 µs` esatti: sono due campi indipendenti che
+concordano. Se un campione fosse strappato — metà da una pubblicazione, metà
+dalla successiva — quei due numeri non tornerebbero fra loro. E' la verifica del
+seqlock fatta sui byte invece che sul codice. `temp_mC` deve stare in
+40000..44999 e `vib_rms` in 900..1299: sono i range dello xorshift in
+`sensor_task.c`, quindi un valore fuori significa byte fuori posto.
+
+Da Go la mappatura e' 1:1, senza `cgo`, senza `unsafe` e senza root:
+
+```go
+type SensorMsg struct {
+    Magic  uint32
+    Seq    uint32
+    TempMC int32
+    VibRMS uint32
+    TsUs   uint64
+    Drops  uint32
+    _      uint32
+}
+
+f, _ := os.Open("/dev/duos-ipc")
+var m SensorMsg
+binary.Read(f, binary.LittleEndian, &m)   // blocca fino al prossimo campione
+```
+
+Un'insidia se ti scrivi un parser: nel dump sopra i 4 byte alti di `ts_us` sono
+zero, perche' 337 secondi stanno in 32 bit. Smettono di esserlo a circa 72
+minuti di uptime. `ts_us` e' a 64 bit e va letto come tale, anche se un dump
+preso nei primi minuti suggerisce il contrario.
+
 ## Primo giro
 
 ```sh
