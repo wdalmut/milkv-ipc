@@ -1,17 +1,24 @@
 From: duos-ipc <noreply@corley.it>
-Subject: [PATCH 3/3] dts: riserva la finestra IPC a 0x8FE00000
+Subject: [PATCH 3/5] dts: riserva la finestra IPC e le da' un consumatore
 
-Sottrae a Linux i 4 KiB usati per lo scambio con il core FreeRTOS.
+Sottrae a Linux i 4 KiB usati per lo scambio con il core FreeRTOS, e dichiara
+il nodo a cui si lega duos_ipc_irq.
 
-Senza questo il kernel considera quella DRAM allocabile e prima o poi ci
+Senza la riserva il kernel considera quella DRAM allocabile e prima o poi ci
 scrive sopra: il sintomo e' un canale che funziona per minuti e poi restituisce
 valori assurdi o magic corrotto. E' il bug piu' insidioso della catena, perche'
 in fase di test breve non si manifesta.
 
-L'indirizzo DEVE coincidere con SHM_PHYS_ADDR in src/shared/shared_msg.h.
+Il nodo duos_ipc esiste perche' il driver ricavi base e dimensione da
+memory-region invece di avere l'indirizzo cablato nel codice: riserva e
+mappatura vengono cosi' dallo stesso posto. Un disallineamento fra le due non
+darebbe un errore, darebbe dati sbagliati.
+
 Sul DuoS la DRAM di Linux e' 0x80000000..0x9FE00000 (gli ultimi 2 MiB sono il
 FreeRTOS, vedi build/boards/cv181x/sg2000_milkv_duos_musl_riscv64_sd/memmap.py):
-0x8FE00000 ci cade dentro, quindi va riservato esplicitamente.
+0x8FE00000 ci cade dentro, quindi va riservato esplicitamente. L'indirizzo deve
+coincidere con SHM_PHYS_ADDR in src/shared/shared_msg.h, che e' cio' che usa il
+lato RTOS - quello non ha un device tree da cui leggerlo.
 
 Il nodo /reserved-memory esiste gia' (cv181x_default_memmap.dtsi) con
 #address-cells/#size-cells/ranges: qui si aggiunge solo il figlio, per non
@@ -20,10 +27,10 @@ ridichiarare proprieta' gia' presenti.
 Generata contro v2.0.1.
 
 diff --git a/build/boards/cv181x/sg2000_milkv_duos_musl_riscv64_sd/dts_riscv/sg2000_milkv_duos_musl_riscv64_sd.dts b/build/boards/cv181x/sg2000_milkv_duos_musl_riscv64_sd/dts_riscv/sg2000_milkv_duos_musl_riscv64_sd.dts
-index 8b973d792..605c7489e 100644
+index 8b973d792..fed19bba4 100644
 --- a/build/boards/cv181x/sg2000_milkv_duos_musl_riscv64_sd/dts_riscv/sg2000_milkv_duos_musl_riscv64_sd.dts
 +++ b/build/boards/cv181x/sg2000_milkv_duos_musl_riscv64_sd/dts_riscv/sg2000_milkv_duos_musl_riscv64_sd.dts
-@@ -6,6 +6,26 @@
+@@ -6,6 +6,39 @@
  
  / {
  	model = "Milk-V DuoS";
@@ -37,15 +44,28 @@ index 8b973d792..605c7489e 100644
 +	 * ridichiariamo proprieta' gia' presenti.
 +	 *
 +	 * no-map: il kernel non deve creare nemmeno una mappatura cacheable,
-+	 * altrimenti /dev/mem + O_SYNC non basta a garantire coerenza (aliasing).
-+	 * Senza questa riserva il kernel alloca li' sopra e il canale muore dopo
-+	 * minuti di funzionamento apparentemente corretto.
++	 * altrimenti la mappatura non cacheable del driver non basterebbe a
++	 * garantire coerenza (aliasing di cache). Senza questa riserva il kernel
++	 * alloca li' sopra e il canale muore dopo minuti di funzionamento
++	 * apparentemente corretto.
 +	 */
 +	reserved-memory {
 +		ipc_shm: ipc-shm@8fe00000 {
 +			reg = <0x0 0x8fe00000 0x0 0x00001000>;
 +			no-map;
 +		};
++	};
++
++	/*
++	 * Il consumatore della finestra: ci si lega duos_ipc_irq, che da
++	 * memory-region ricava base e dimensione. E' il motivo per cui
++	 * l'indirizzo non compare nel codice del modulo - riserva e mappatura
++	 * vengono dallo stesso nodo e non possono divergere. Un disallineamento
++	 * fra le due non darebbe un errore, darebbe dati sbagliati.
++	 */
++	duos_ipc {
++		compatible = "corley,duos-ipc";
++		memory-region = <&ipc_shm>;
 +	};
  };
  

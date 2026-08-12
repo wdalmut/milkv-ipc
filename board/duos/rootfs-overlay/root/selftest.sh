@@ -14,9 +14,10 @@ seq_now() {
 	ipc-reader -1 | sed -n 's/.*seq=\([0-9]*\).*/\1/p'
 }
 
-echo "== 1. magic presente?"
+echo "== 1. il canale risponde?"
 if ! ipc-reader -1; then
-	echo "FAIL: magic assente. Il task FreeRTOS gira? L'indirizzo combacia?"
+	echo "FAIL: nessun campione. Il task FreeRTOS gira? Il modulo e' caricato?"
+	echo "      lsmod | grep duos ; ipc-reader --devmem -1"
 	exit 1
 fi
 
@@ -35,32 +36,40 @@ if [ "$S1" = "$S2" ]; then
 	exit 1
 fi
 
-echo "== 3. modo di attesa"
-if [ -c /dev/duos-ipc ]; then
-	echo "   /dev/duos-ipc presente: attesa sul doorbell"
+echo "== 3. il device c'e' ed e' leggibile da tutti"
+if [ ! -c /dev/duos-ipc ]; then
+	echo "FAIL: /dev/duos-ipc assente."
+	echo "      Modulo non caricato, o nodo duos_ipc mancante nel device tree:"
+	echo "      il driver si lega a compatible = corley,duos-ipc."
+	exit 1
+fi
+ls -l /dev/duos-ipc
+
+# Il senso del redesign: i dati escono dal device, non da /dev/mem. Se questo
+# passa, il canale non richiede piu' root ne' CONFIG_STRICT_DEVMEM disattivato.
+echo "== 4. si legge SENZA root"
+if su -s /bin/sh -c "ipc-reader -1" nobody > "$TMP" 2>&1; then
+	echo "   ok, come utente nobody"
 else
-	echo "   WARN: /dev/duos-ipc assente, il reader ripieghera' sul polling."
-	echo "         Immagine senza BR2_PACKAGE_DUOS_IPC_KMOD, o modulo non caricato."
+	echo "FAIL: da utente non privilegiato non funziona."
+	cat "$TMP"
+	echo "      Permessi del device? Il driver lo crea con mode 0444."
+	exit 1
 fi
 
-echo "== 4. raccolgo $N campioni"
+echo "== 5. raccolgo $N campioni"
 ipc-reader -n "$N" > "$TMP" || true
 GOT=$(grep -c '^seq=' "$TMP" || true)
 echo "   ricevuti: $GOT / $N"
 [ "$GOT" -ge "$N" ] || { echo "FAIL: producer fermo o troppo lento"; exit 1; }
 
-echo "== 5. nessuna perdita"
-# Due perdite distinte: [SEQ -n] = il producer ha sovrascritto campioni non
-# letti; [BELL -n] = notifiche accorpate. La prima e' un problema di consumo,
-# la seconda di notifica.
-if grep -q 'SEQ -' "$TMP"; then
+echo "== 6. nessun campione perso"
+if grep -q 'PERSI' "$TMP"; then
 	echo "   WARN: campioni sovrascritti prima di essere letti"
-fi
-if grep -q 'BELL -' "$TMP"; then
-	echo "   WARN: doorbell accorpate - coda mailbox satura?"
+	echo "         doorbell accorpate: confronta con /sys/class/misc/duos-ipc/bell"
 fi
 
-echo "== 6. seq monotona"
+echo "== 7. seq monotona"
 awk '
   /^seq=/ {
     split($1, a, "="); s = a[2] + 0
@@ -70,7 +79,7 @@ awk '
   END { exit bad ? 1 : 0 }
 ' "$TMP" || exit 1
 
-echo "== 7. timestamp crescenti (niente letture stantie da cache)"
+echo "== 8. timestamp crescenti (niente letture stantie da cache)"
 awk '
   { for (i = 1; i <= NF; i++) if ($i ~ /^ts=/) { split($i, a, "="); t = a[2] + 0 } }
   /^seq=/ {
@@ -80,14 +89,25 @@ awk '
   END { exit bad ? 1 : 0 }
 ' "$TMP" || exit 1
 
-echo "== 8. dmesg: nessun doorbell orfano"
+echo "== 9. dmesg: nessun doorbell orfano DOPO il caricamento"
 # "error ip=6 , cmd=64" e' il ramo dell'ISR di cvi_rtos_cmdqu che non trova ne'
-# un waiter ne' un handler registrato: e' la firma di doorbell accesa senza
-# modulo. La sua assenza e' la prova che l'handler e' agganciato.
-if dmesg | grep -q 'error ip=6'; then
-	echo "FAIL: doorbell senza handler. duos_ipc_irq non caricato?"
-	dmesg | grep 'error ip=6' | tail -3
+# un waiter ne' un handler registrato. Al boot ne compare sempre una manciata:
+# l'RTOS suona gia' mentre il driver del mailbox ha fatto probe ma il nostro
+# modulo non e' ancora caricato. Quelle sono attese. Quelle che contano sono le
+# righe DOPO il messaggio del modulo: li' vorrebbe dire che l'handler e' stato
+# scalzato, o che il modulo e' stato scaricato.
+LAST_ERR=$(dmesg | grep -n 'error ip=6' | tail -1 | cut -d: -f1)
+LAST_MOD=$(dmesg | grep -n 'duos-ipc.*pronto' | tail -1 | cut -d: -f1)
+
+if [ -z "$LAST_MOD" ]; then
+	echo "   WARN: nessun messaggio di caricamento del modulo in dmesg"
+elif [ -n "$LAST_ERR" ] && [ "$LAST_ERR" -gt "$LAST_MOD" ]; then
+	echo "FAIL: doorbell orfane dopo il caricamento del modulo."
+	echo "      Handler scalzato da una RTOS_CMDQU_REQUEST su IP_SYSTEM?"
+	dmesg | tail -5
 	exit 1
+else
+	echo "   ok (${LAST_ERR:-0} righe, tutte precedenti al caricamento)"
 fi
 
 echo
