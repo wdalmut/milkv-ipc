@@ -14,3 +14,4 @@ docs/superpowers
 Module.symvers
 modules.order
 .tmp_versions/
+.repo-path

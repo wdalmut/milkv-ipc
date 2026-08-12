@@ -24,7 +24,11 @@ HERE=$(cd "$(dirname "$0")/.." && pwd)
 SDK_DIR=${1:-$(cat "$HERE/.sdk-path" 2>/dev/null || echo "")}
 
 # Il path di questo repo come lo vede chi compila.
-REPO_PATH=${REPO_PATH:-$HERE}
+#
+# Si ricorda in .repo-path, cosi' un ./scripts/setup-sdk.sh senza variabili non
+# riporta i symlink all'host annullando la scelta in silenzio. E' il modo in cui
+# ci siamo cascati la prima volta.
+REPO_PATH=${REPO_PATH:-$(cat "$HERE/.repo-path" 2>/dev/null || echo "$HERE")}
 
 [ -n "$SDK_DIR" ] && [ -d "$SDK_DIR" ] || {
 	echo "!! percorso SDK mancante o inesistente: '$SDK_DIR'" >&2
@@ -45,6 +49,7 @@ ln -sf "$REPO_PATH/src/shared/shared_msg.h" "$DEST/shared_msg.h"
 echo ">> collegato $REPO_PATH/rtos -> $DEST"
 
 if [ "$REPO_PATH" = "$HERE" ]; then
+	rm -f "$HERE/.repo-path"
 	# Nessun override: i symlink devono risolvere anche da qui, e se non lo
 	# fanno e' un errore vero, non un artefatto di container.
 	if [ ! -r "$DEST/sensor_task.c" ] || [ ! -r "$DEST/shared_msg.h" ]; then
@@ -52,6 +57,7 @@ if [ "$REPO_PATH" = "$HERE" ]; then
 		exit 1
 	fi
 else
-	echo "   (REPO_PATH sovrascritto: i symlink risolvono dove compili,"
-	echo "    non necessariamente da qui. Non posso verificarli.)"
+	echo "$REPO_PATH" > "$HERE/.repo-path"
+	echo "   ricordato in .repo-path: i prossimi run useranno questo path"
+	echo "   anche senza la variabile. Per tornare all'host: REPO_PATH=$HERE"
 fi

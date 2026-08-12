@@ -157,6 +157,10 @@ falliscono in modi diversi:
   entrambi i lati, perche' `/sdk` e `/data` non hanno una radice comune con
   `~/git/`.
 
+`REPO_PATH` si ricorda in `.repo-path`: serve solo la prima volta, e i run
+successivi di `setup-sdk.sh` non riportano i symlink all'host annullando la
+scelta in silenzio. Per tornare indietro lo si passa esplicito.
+
 Se compili sull'host e basta, `./scripts/setup-sdk.sh` senza variabili fa la
 cosa giusta e verifica che i symlink risolvano.
 
