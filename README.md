@@ -159,8 +159,16 @@ modo intermittente.
 ## Il formato sul filo
 
 `read()` restituisce 32 byte, little-endian, con gli offset dichiarati in
-`shared_msg.h`. Niente header, niente lunghezza variabile: un `hexdump -C
-/dev/duos-ipc` sulla board da' due campioni consecutivi cosi'.
+`shared_msg.h`. Niente header, niente lunghezza variabile.
+
+Sulla board (busybox non ha `hexdump`, ma ha `od`):
+
+```sh
+cat /dev/duos-ipc | od -A n -t x1     # streaming, Ctrl-C per fermarlo
+head -c 64 /dev/duos-ipc | od -A n -t x1   # esattamente due campioni
+```
+
+`od` stampa 16 byte per riga, quindi ogni campione occupa due righe:
 
 ```text
 01 ee ff c0  33 0d 00 00  56 a0 00 00  a8 03 00 00
