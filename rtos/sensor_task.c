@@ -17,8 +17,35 @@
 /* Header dell'SDK: i nomi variano fra revisioni, verifica nel tuo tree. */
 #include "rtos_cmdqu.h"     /* cmdqu_t, enum IP_TYPE                     */
 #include "comm.h"           /* main_GetMODHandle(), E_QUEUE_CMDQU        */
+#include "printf.h"
 
 #include "shared_msg.h"
+
+/*
+ * Log del core piccolo sulla console seriale.
+ *
+ * ATTENZIONE AI NOMI, sono controintuitivi: dump_uart_enable() abilita la
+ * CATTURA dei messaggi in un buffer in RAM (che Linux poi legge con
+ * SYS_CMD_INFO_DUMP_MSG) e come effetto collaterale mette uart_putc_enable = 0,
+ * cioe' SPEGNE la stampa sulla seriale. Quella che fa parlare il core e'
+ * dump_uart_disable().
+ *
+ * Al boot dump_uart_init() chiama enable() se transfer_config.dump_print_enable
+ * e' settato, e su questa board lo e': e' il motivo della riga
+ * "dump_print_enable & log will not print" che vedi in console.
+ *
+ * Il costo: RTOS e Linux condividono la UART senza arbitraggio, quindi due
+ * printf simultanei si intrecciano a meta' riga. Si vede gia' nel log di boot.
+ * Con una riga sola all'avvio e' trascurabile; con un heartbeat frequente no.
+ */
+#define IPC_RTOS_LOG   1
+#define IPC_LOG_EVERY  0   /* > 0: una riga ogni N pubblicazioni */
+
+#if IPC_RTOS_LOG
+/* Dichiarata in driver/uart/include/dump_uart.h, che non e' sulla include path
+ * della libreria "comm". */
+extern void dump_uart_disable(void);
+#endif
 
 /*
  * La finestra e' sottratta a Linux nel DTS (vedi patch 0003), quindi la
@@ -135,6 +162,8 @@ static void doorbell(void)
 
 static void sensor_task(void *arg)
 {
+    uint32_t n = 0;
+
     (void)arg;
     shm_init();
 
@@ -147,12 +176,33 @@ static void sensor_task(void *arg)
         doorbell();
 #endif
 
+        n++;
+#if IPC_RTOS_LOG && IPC_LOG_EVERY
+        if ((n % IPC_LOG_EVERY) == 0)
+            printf("ipc: seq=%u\n", (unsigned int)n);
+#else
+        (void)n;
+#endif
+
         vTaskDelay(pdMS_TO_TICKS(100));   /* 10 Hz */
     }
 }
 
 void ipc_sensor_task_create(void)
 {
+#if IPC_RTOS_LOG
+    /*
+     * Chiamata prima dello scheduler, quando dump_uart_init() ha gia' girato
+     * (avviene in post_system_init(), prima di main_cvirtos()). Se
+     * l'allocazione del buffer di dump fosse fallita, dump_uart sarebbe NULL e
+     * questa dereferenzierebbe zero - ma in quel caso non vedresti nemmeno la
+     * riga "log will not print" al boot, che invece c'e'.
+     */
+    dump_uart_disable();
+    printf("ipc: task avviato, shm=0x%08x, doorbell=%s\n",
+           (unsigned int)SHM_PHYS_ADDR, IPC_DOORBELL ? "on" : "off");
+#endif
+
     xTaskCreate(sensor_task, "sensor", configMINIMAL_STACK_SIZE * 2, NULL,
                 tskIDLE_PRIORITY + 2, NULL);
 }
